@@ -5,25 +5,27 @@ project:
   default_input_glob: /home/ubuntu/hzf/starlink_as_probe/as*/results/active_ipv4_*.csv
 
 scan:
-  engine: nmap
-  nmap_path: /usr/bin/nmap
-  scan_type: syn
-  timing_template: -T4
-  max_retries: 2
-  host_timeout: 15m
-  min_rate: 1000
-  targets_per_chunk: 5000
+  engine: xmap
+  xmap_path: /usr/bin/xmap
+  probe_module: tcp_syn
+  bandwidth: 10M
+  cooldown_secs: 10
+  batch: 1
+  probes: 1
+  retries: 1
+  sender_threads: 4
+  quiet: true
 
 fingerprint:
   workers: 4
-  hosts_per_batch: 64
+  hosts_per_batch: 512
   nmap_path: /usr/bin/nmap
   timing_template: -T4
-  version_intensity: 7
+  version_intensity: 3
   host_timeout: 15m
   script_timeout: 2m
-  min_hostgroup: 16
-  max_hostgroup: 64
+  min_hostgroup: 64
+  max_hostgroup: 256
 
 enrich:
   nvd_api_base: https://services.nvd.nist.gov/rest/json/cves/2.0

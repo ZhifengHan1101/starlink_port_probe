@@ -2,13 +2,13 @@
 
 一个面向 Starlink 活跃 IPv4 清单的 TCP 服务探测项目。流程分为五个阶段：
 
-1. `scan`: 对输入 IP 列表执行 `nmap` TCP 端口扫描，覆盖 top 1000 TCP 端口，只负责发现开放端口。
+1. `scan`: 对输入 IP 列表执行 `xmap` TCP SYN 端口扫描，覆盖 top 1000 TCP 端口，只负责发现开放端口。
 2. `fingerprint`: 对开放端口执行 `nmap -sV` 服务识别，提取服务、产品、版本、CPE，并保存原始证据。
 3. `enrich`: 基于提取出的 CPE / 产品信息关联 CVE。
 4. `report`: 生成 Markdown 报告。
 5. `all`: 串行执行以上全部步骤。
 
-项目不再维护自定义协议探针逻辑，而是直接复用 `nmap` 和 `nmap -sV` 的成熟识别能力，减少误判和维护成本。
+项目不再维护自定义协议探针逻辑，而是直接复用 `xmap` 做高速开放端口发现，再用 `nmap -sV` 做服务识别，减少误判和维护成本。
 
 ## 目录
 
@@ -39,17 +39,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-默认配置使用 `nmap -sS` 做端口发现，适合大规模目标的高并发探测，因此需要 root 权限。若当前环境无法使用原始套接字，可以显式将 `scan_type` 改为 `connect` 退回 `nmap -sT`，但在大规模公网扫描下性能会明显更差。
+默认配置使用 `xmap` 的 `tcp_syn` 模块做端口发现，适合大规模目标的高速探测，因此需要 root 权限。
 
 ```yaml
 scan:
-  engine: nmap
-  nmap_path: /usr/bin/nmap
-  scan_type: syn
-  timing_template: -T4
-  host_timeout: 15m
-  min_rate: 1000
-  targets_per_chunk: 5000
+  engine: xmap
+  xmap_path: /usr/bin/xmap
+  probe_module: tcp_syn
+  bandwidth: 10M
+  cooldown_secs: 10
 ```
 
 ## 输入
@@ -81,9 +79,11 @@ python3 main.py scan --run-id test-run --input /home/ubuntu/hzf/starlink_as_prob
 python3 main.py fingerprint --run-id test-run --workers 4
 ```
 
-`scan` 阶段会按目标 IP 分块，每批对整份 top 1000 TCP 端口列表执行一次 `nmap`，避免把同一大批 IP 因端口分块而反复送入 Nmap。
+`scan` 阶段会把整份输入 IP 和整份 top 1000 TCP 端口一次性交给 `xmap`，不再做任何目标分块或端口分块，直接由 `xmap` 自己负责高速发包与接收。
 
 `fingerprint` 阶段会先按开放端口分组，再把对应 IP 按批次送入 `nmap -sV -p <port>`，避免把某批主机的端口并集再次广播到所有主机上。
+
+默认将 `version_intensity` 下调到 `3`，并把 `hosts_per_batch` 提高到 `512`，降低弱响应主机拖慢 `nmap -sV` 的概率，同时减少 Python 侧频繁拉起 Nmap 进程的开销。
 
 `--workers` 表示 `fingerprint` 或 `enrich` 阶段的并发批次数，而非线程内的逐 IP 探测数。
 
@@ -101,11 +101,11 @@ runs/<run_id>/
 ├── enriched.csv
 ├── report.md
 └── raw/
-    ├── nmap_scan/
-    │   └── target_chunk_*/
-    │       ├── scan.xml
-    │       ├── scan_metadata.json
-    │       └── targets.txt
+    ├── xmap_scan/
+    │   ├── targets.txt
+    │   ├── results.csv
+    │   ├── scan_metadata.json
+    │   └── command_metadata.json
     ├── nmap_service/
     │   └── port_*/batch_*/
     │       ├── service.xml
@@ -117,11 +117,12 @@ runs/<run_id>/
 
 字段说明：
 
-- `open_ports.*`: `nmap` 开放端口结果。
+- `open_ports.*`: `xmap` 开放端口结果。
 - `fingerprints.*`: `nmap -sV` 服务识别结果，包含 `service`, `product`, `version`, `cpe`, `confidence`。
 - `enriched.*`: 在指纹结果基础上附加 `cves`。
-- `raw/nmap_scan/target_chunk_*/scan.xml`: 每个目标分块对整份端口列表的扫描 XML。
-- `raw/nmap_scan/target_chunk_*/scan_metadata.json`: 每个扫描分块的命令、目标数、端口列表与返回码。
+- `raw/xmap_scan/results.csv`: 单次 `xmap` TCP SYN 扫描的原始结果。
+- `raw/xmap_scan/scan_metadata.json`: `xmap` 原生输出的扫描元数据。
+- `raw/xmap_scan/command_metadata.json`: 本次调用命令、返回码、目标数和端口列表。
 - `raw/nmap_service/port_*/batch_*/service.xml`: 每个端口分组批次的 `nmap -sV` 原始 XML。
 - `raw/evidence/*.json`: 每个 `ip:port` 的服务识别证据，主要来自 `nmap -sV` 的 service/cpe/script 输出。
 
@@ -141,14 +142,15 @@ export NVD_API_KEY=your_api_key
 
 ## 依赖说明
 
-- `nmap`: 用于开放端口发现和服务识别。
+- `xmap`: 用于高速开放端口发现。
+- `nmap`: 用于服务识别。
 - Python 依赖见 `requirements.txt`。
 
 ## 设计原则
 
 - 开放端口发现和服务识别解耦。
-- 端口发现按目标分块而不是按端口分块，尽量复用 Nmap 的内部并发调度。
+- 端口发现使用单次 `xmap` 全量高速扫描，不做外部 Python 分块。
 - 服务识别按端口聚合目标，避免对大量已知关闭端口做二次无效探测。
-- 大规模公网扫描默认启用 `--host-timeout` 与 `--min-rate`，降低异常主机拖慢全局任务的风险。
+- 服务识别默认降低 `version_intensity` 并提高每批主机数，降低弱响应主机和频繁进程启动带来的拖慢效应。
 - 保留原始 XML 与证据 JSON，便于复核与二次分析。
 - 输出 JSONL/CSV/Markdown，适合后处理和报告交付。
