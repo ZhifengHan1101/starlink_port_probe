@@ -1,0 +1,32 @@
+project:
+  name: starlink_port_probe
+  output_root: /home/ubuntu/hzf/starlink_port_probe/runs
+  port_list_file: /home/ubuntu/hzf/starlink_port_probe/nmap_top1000_tcp_ports.txt
+  default_input_glob: /home/ubuntu/hzf/starlink_as_probe/as*/results/active_ipv4_*.csv
+
+scan:
+  engine: nmap
+  nmap_path: /usr/bin/nmap
+  timing_template: -T4
+  max_retries: 1
+  host_timeout: ""
+  min_rate: ""
+  ports_per_chunk: 256
+
+fingerprint:
+  workers: 16
+  nmap_path: /usr/bin/nmap
+  timing_template: -T4
+  version_intensity: 7
+  host_timeout: 60s
+
+enrich:
+  nvd_api_base: https://services.nvd.nist.gov/rest/json/cves/2.0
+  request_timeout_seconds: 20
+  max_cves_per_match: 20
+  include_rejected: false
+  query_delay_seconds: 0.6
+
+report:
+  top_n_products: 20
+  top_n_cves: 20
