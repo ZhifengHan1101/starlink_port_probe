@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,6 +51,7 @@ class Fingerprinter:
 
         services_by_host_port: dict[tuple[str, int], dict[str, Any]] = {}
         batch_errors: dict[tuple[str, int], str] = {}
+        os_by_host = self.detect_os(hosts, workers=max_workers)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [
@@ -66,10 +68,11 @@ class Fingerprinter:
             for record in sorted(records_by_host[ip], key=lambda item: item.port):
                 batch_error = batch_errors.get((record.ip, record.port))
                 service_info = services_by_host_port.get((record.ip, record.port), {})
-                evidence = self._build_evidence(record.ip, record.port, service_info, batch_error)
+                os_info = os_by_host.get(record.ip, {})
+                evidence = self._build_evidence(record.ip, record.port, service_info, os_info, batch_error)
                 evidence_path = self.evidence_dir / f"{record.ip}_{record.port}.json"
                 save_json(evidence_path, evidence)
-                results.append(self._build_record(record, service_info, evidence_path, batch_error))
+                results.append(self._build_record(record, service_info, os_info, evidence_path, batch_error))
         return results
 
     def fingerprint_batch(
@@ -140,6 +143,72 @@ class Fingerprinter:
                 batch_index += 1
         return batches
 
+    def detect_os(self, hosts: list[str], workers: int) -> dict[str, dict[str, Any]]:
+        if not hosts or not self.fp_cfg.get("os_detection", True):
+            return {}
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            return {}
+
+        hosts_per_batch = int(self.fp_cfg.get("os_hosts_per_batch", 0) or 0) or int(self.fp_cfg.get("hosts_per_batch", 0) or 0)
+        host_batches = chunked(hosts, hosts_per_batch)
+        os_by_host: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(self.os_batch, batch_index, host_batch)
+                for batch_index, host_batch in enumerate(host_batches)
+            ]
+            for future in as_completed(futures):
+                os_by_host.update(future.result())
+        return os_by_host
+
+    def os_batch(self, batch_index: int, hosts: list[str]) -> dict[str, dict[str, Any]]:
+        batch_dir = ensure_dir(self.raw_dir / "os" / f"batch_{batch_index:03d}")
+        target_file = batch_dir / "targets.txt"
+        xml_path = batch_dir / "os.xml"
+        meta_path = batch_dir / "os_metadata.json"
+        target_file.write_text("\n".join(hosts) + "\n", encoding="utf-8")
+
+        command = [
+            str(self.fp_cfg.get("nmap_path", "nmap")),
+            "-Pn",
+            "-n",
+            "-O",
+            "--osscan-limit",
+            "--max-os-tries",
+            str(self.fp_cfg.get("os_max_tries", 1)),
+            "-oX",
+            str(xml_path),
+            "-iL",
+            str(target_file),
+        ]
+        if self.fp_cfg.get("timing_template"):
+            command.append(str(self.fp_cfg["timing_template"]))
+        if self.fp_cfg.get("host_timeout"):
+            command.extend(["--host-timeout", str(self.fp_cfg["host_timeout"])])
+        if self.fp_cfg.get("min_hostgroup"):
+            command.extend(["--min-hostgroup", str(self.fp_cfg["min_hostgroup"])])
+        if self.fp_cfg.get("max_hostgroup"):
+            command.extend(["--max-hostgroup", str(self.fp_cfg["max_hostgroup"])])
+
+        try:
+            completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        except FileNotFoundError as exc:
+            raise RuntimeError("nmap 未安装或不在 PATH 中，无法执行 OS 识别。") from exc
+
+        save_json(
+            meta_path,
+            {
+                "command": command,
+                "returncode": completed.returncode,
+                "stdout": completed.stdout,
+                "stderr": completed.stderr,
+                "hosts": hosts,
+            },
+        )
+        if completed.returncode != 0 or not xml_path.exists():
+            return {}
+        return self._parse_nmap_os_xml(xml_path)
+
     def _parse_nmap_service_xml(self, xml_path: Path) -> dict[tuple[str, int], dict[str, Any]]:
         services: dict[tuple[str, int], dict[str, Any]] = {}
         root = ET.parse(xml_path).getroot()
@@ -173,11 +242,46 @@ class Fingerprinter:
                 }
         return services
 
+    def _parse_nmap_os_xml(self, xml_path: Path) -> dict[str, dict[str, Any]]:
+        results: dict[str, dict[str, Any]] = {}
+        root = ET.parse(xml_path).getroot()
+        for host in root.findall("host"):
+            address = host.find("./address[@addrtype='ipv4']")
+            if address is None:
+                continue
+            ip = address.get("addr", "").strip()
+            if not ip:
+                continue
+
+            osmatch = host.find("./os/osmatch")
+            osclass = host.find("./os/osmatch/osclass")
+            if osmatch is None and osclass is None:
+                continue
+
+            os_name = osmatch.get("name") if osmatch is not None else None
+            accuracy_text = osmatch.get("accuracy") if osmatch is not None else None
+            try:
+                accuracy = (int(accuracy_text) / 100.0) if accuracy_text is not None else 0.0
+            except ValueError:
+                accuracy = 0.0
+
+            os_cpes = [item.text for item in host.findall("./os/osmatch/osclass/cpe") if item.text]
+            results[ip] = {
+                "os_name": os_name,
+                "os_vendor": osclass.get("vendor") if osclass is not None else None,
+                "os_family": osclass.get("osfamily") if osclass is not None else None,
+                "os_generation": osclass.get("osgen") if osclass is not None else None,
+                "os_accuracy": accuracy,
+                "os_cpe": os_cpes,
+            }
+        return results
+
     def _build_evidence(
         self,
         ip: str,
         port: int,
         service_info: dict[str, Any],
+        os_info: dict[str, Any],
         parse_error: str | None,
     ) -> dict[str, Any]:
         evidence: dict[str, Any] = {
@@ -199,6 +303,7 @@ class Fingerprinter:
             "service": service_attrs,
             "cpes": service_info.get("cpes", []),
             "scripts": service_info.get("scripts", []),
+            "os": os_info,
         }
         evidence["steps"].append(step)
         summary = self._build_summary(service_attrs)
@@ -210,6 +315,7 @@ class Fingerprinter:
         self,
         record: OpenPortRecord,
         service_info: dict[str, Any],
+        os_info: dict[str, Any],
         evidence_path: Path,
         parse_error: str | None,
     ) -> FingerprintRecord:
@@ -232,6 +338,10 @@ class Fingerprinter:
         elif extrainfo:
             notes.append(f"nmap extra info: {extrainfo}")
 
+        fingerprint_methods = ["nmap_sV"]
+        if os_info:
+            fingerprint_methods.append("nmap_O")
+
         return FingerprintRecord(
             run_id=self.run_id,
             source_file=record.source_file,
@@ -242,10 +352,16 @@ class Fingerprinter:
             service=service_name,
             product=product,
             version=version,
+            os_name=os_info.get("os_name"),
+            os_vendor=os_info.get("os_vendor"),
+            os_family=os_info.get("os_family"),
+            os_generation=os_info.get("os_generation"),
+            os_accuracy=float(os_info.get("os_accuracy", 0.0) or 0.0),
+            os_cpe=os_info.get("os_cpe", []),
             cpe=cpes,
             confidence=confidence,
             evidence_path=str(evidence_path),
-            fingerprint_method=["nmap_sV"],
+            fingerprint_method=fingerprint_methods,
             notes=notes,
             raw_summary=self._build_summary(service_attrs),
         )

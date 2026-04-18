@@ -3,7 +3,7 @@
 一个面向 Starlink 活跃 IPv4 清单的 TCP 服务探测项目。流程分为五个阶段：
 
 1. `scan`: 对输入 IP 列表执行 `xmap` TCP SYN 端口扫描，覆盖 top 1000 TCP 端口，只负责发现开放端口。
-2. `fingerprint`: 对开放端口执行 `nmap -sV` 服务识别，提取服务、产品、版本、CPE，并保存原始证据。
+2. `fingerprint`: 对开放端口执行 `nmap -sV` 服务识别，并对主机执行 `nmap -O` 操作系统识别，提取服务、产品、版本、CPE、OS 信息，并保存原始证据。
 3. `enrich`: 基于提取出的 CPE / 产品信息关联 CVE。
 4. `report`: 生成 Markdown 报告。
 5. `all`: 串行执行以上全部步骤。
@@ -83,7 +83,7 @@ python3 main.py fingerprint --run-id test-run --workers 4
 
 `fingerprint` 阶段会先按开放端口分组，再把对应 IP 按批次送入 `nmap -sV -p <port>`，避免把某批主机的端口并集再次广播到所有主机上。
 
-默认将 `version_intensity` 下调到 `3`，并把 `hosts_per_batch` 提高到 `512`，降低弱响应主机拖慢 `nmap -sV` 的概率，同时减少 Python 侧频繁拉起 Nmap 进程的开销。
+默认将 `version_intensity` 下调到 `3`，并把 `hosts_per_batch` 提高到 `512`，降低弱响应主机拖慢 `nmap -sV` 的概率，同时减少 Python 侧频繁拉起 Nmap 进程的开销。`fingerprint` 还会额外做一轮按主机批处理的 `nmap -O`，把 OS 名称、家族、代际版本和 CPE 一起写入结果。
 
 `--workers` 表示 `fingerprint` 或 `enrich` 阶段的并发批次数，而非线程内的逐 IP 探测数。
 
@@ -119,6 +119,7 @@ runs/<run_id>/
 
 - `open_ports.*`: `xmap` 开放端口结果。
 - `fingerprints.*`: `nmap -sV` 服务识别结果，包含 `service`, `product`, `version`, `cpe`, `confidence`。
+- `fingerprints.*` 还会包含 `os_name`, `os_vendor`, `os_family`, `os_generation`, `os_accuracy`, `os_cpe`。
 - `enriched.*`: 在指纹结果基础上附加 `cves`。
 - `raw/xmap_scan/results.csv`: 单次 `xmap` TCP SYN 扫描的原始结果。
 - `raw/xmap_scan/scan_metadata.json`: `xmap` 原生输出的扫描元数据。

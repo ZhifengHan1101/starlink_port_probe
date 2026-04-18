@@ -54,6 +54,7 @@ def render_report(
         lines.append(
             f"- `{row.ip}:{row.port}` -> service=`{row.service or 'unknown'}`, "
             f"product=`{row.product or 'unknown'}`, version=`{row.version or 'unknown'}`, "
+            f"os=`{row.os_name or row.os_family or 'unknown'}`, "
             f"confidence=`{row.confidence:.2f}`, cves=`{cve_ids}`"
         )
     Path(output_path).write_text("\n".join(lines) + "\n", encoding="utf-8")

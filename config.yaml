@@ -6,12 +6,12 @@ project:
 
 scan:
   engine: xmap
-  xmap_path: /usr/bin/xmap
+  xmap_path: /usr/local/sbin/xmap
   probe_module: tcp_syn
   bandwidth: 10M
   cooldown_secs: 10
   batch: 1
-  probes: 1
+  probes: 3
   retries: 1
   sender_threads: 4
   quiet: true
@@ -19,6 +19,9 @@ scan:
 fingerprint:
   workers: 4
   hosts_per_batch: 512
+  os_detection: true
+  os_hosts_per_batch: 256
+  os_max_tries: 1
   nmap_path: /usr/bin/nmap
   timing_template: -T4
   version_intensity: 3

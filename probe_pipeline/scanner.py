@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -30,10 +31,21 @@ def scan_targets(
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         raise RuntimeError("xmap TCP SYN 扫描需要 root 权限。请以 root 运行 scan/all 阶段。")
 
+    configured_xmap = str(scan_cfg.get("xmap_path", "xmap"))
+    xmap_binary = configured_xmap
+    if os.path.sep in configured_xmap and not Path(configured_xmap).exists():
+        discovered = shutil.which(Path(configured_xmap).name)
+        if discovered:
+            xmap_binary = discovered
+    elif os.path.sep not in configured_xmap:
+        discovered = shutil.which(configured_xmap)
+        if discovered:
+            xmap_binary = discovered
+
     target_file.write_text("\n".join(item["ip"] for item in targets) + "\n", encoding="utf-8")
     port_arg = ",".join(str(port) for port in ports)
     command = [
-        str(scan_cfg.get("xmap_path", "xmap")),
+        xmap_binary,
         "-4",
         "-I",
         str(target_file),
@@ -48,7 +60,7 @@ def scan_targets(
         "--cooldown-secs",
         str(scan_cfg.get("cooldown_secs", 10)),
         "--output-fields",
-        "saddr,dport,clas,success,repeat,timestamp_str",
+        "saddr,sport,dport,clas,success,repeat,timestamp_str",
         "--output-filter",
         "success = 1 && repeat = 0",
         "-o",
@@ -82,7 +94,10 @@ def scan_targets(
     try:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
     except FileNotFoundError as exc:
-        raise RuntimeError("xmap 未安装或不在 PATH 中，无法执行 scan 阶段。") from exc
+        raise RuntimeError(
+            f"xmap 不可执行。当前配置 xmap_path={configured_xmap!r}，"
+            "请改为正确路径或确保 xmap 在 PATH 中。"
+        ) from exc
 
     save_json(
         command_file,
@@ -114,7 +129,7 @@ def parse_xmap_csv(
             if str(row.get("success", "")).strip() not in {"1", "true", "True"}:
                 continue
             ip = (row.get("saddr") or "").strip()
-            port_text = (row.get("dport") or "").strip()
+            port_text = (row.get("sport") or "").strip()
             if not ip or not port_text:
                 continue
             meta = lookup.get(ip, {})

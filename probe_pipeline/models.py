@@ -31,6 +31,12 @@ class FingerprintRecord:
     service: str | None = None
     product: str | None = None
     version: str | None = None
+    os_name: str | None = None
+    os_vendor: str | None = None
+    os_family: str | None = None
+    os_generation: str | None = None
+    os_accuracy: float = 0.0
+    os_cpe: list[str] = field(default_factory=list)
     cpe: list[str] = field(default_factory=list)
     confidence: float = 0.0
     evidence_path: str | None = None
