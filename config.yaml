@@ -7,12 +7,12 @@ project:
 scan:
   engine: nmap
   nmap_path: /usr/bin/nmap
-  scan_type: connect
+  scan_type: syn
   timing_template: -T4
   max_retries: 2
-  host_timeout: ""
-  min_rate: ""
-  ports_per_chunk: 256
+  host_timeout: 15m
+  min_rate: 1000
+  targets_per_chunk: 5000
 
 fingerprint:
   workers: 4
@@ -20,7 +20,7 @@ fingerprint:
   nmap_path: /usr/bin/nmap
   timing_template: -T4
   version_intensity: 7
-  host_timeout: ""
+  host_timeout: 15m
   script_timeout: 2m
   min_hostgroup: 16
   max_hostgroup: 64
@@ -31,6 +31,8 @@ enrich:
   max_cves_per_match: 20
   include_rejected: false
   query_delay_seconds: 0.6
+  workers: 4
+  rate_limit_qps: 1.6
   allow_keyword_fallback: false
 
 report:

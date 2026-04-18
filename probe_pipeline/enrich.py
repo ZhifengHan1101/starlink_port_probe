@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import requests
@@ -9,14 +11,46 @@ import requests
 from .models import CVERecord, EnrichedRecord, FingerprintRecord
 
 
+class RateLimiter:
+    def __init__(self, qps: float) -> None:
+        self.interval = 0.0 if qps <= 0 else 1.0 / qps
+        self._lock = threading.Lock()
+        self._next_allowed = 0.0
+
+    def wait(self) -> None:
+        if self.interval <= 0:
+            return
+
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                if now >= self._next_allowed:
+                    self._next_allowed = now + self.interval
+                    return
+                delay = self._next_allowed - now
+            if delay > 0:
+                time.sleep(delay)
+
+
 class Enricher:
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, workers: int | None = None) -> None:
         self.config = config["enrich"]
         self.api_key = os.getenv("NVD_API_KEY")
+        self.workers = max(1, int(workers or self.config.get("workers", 4) or 4))
+        configured_qps = self.config.get("rate_limit_qps")
+        if configured_qps:
+            self.rate_limit_qps = float(configured_qps)
+        else:
+            delay = float(self.config.get("query_delay_seconds", 0.0) or 0.0)
+            if delay > 0:
+                self.rate_limit_qps = 1.0 / delay
+            else:
+                self.rate_limit_qps = 5.0 if self.api_key else 1.0
+        self.rate_limiter = RateLimiter(self.rate_limit_qps)
 
     def run(self, records: list[FingerprintRecord]) -> list[EnrichedRecord]:
         enriched: list[EnrichedRecord] = []
-        cache: dict[str, list[dict[str, Any]]] = {}
+        cache = self._prefetch_cache(records)
         for record in records:
             status = "skipped"
             cves: list[dict[str, Any]] = []
@@ -24,10 +58,7 @@ class Enricher:
             if query_keys:
                 status = "ok"
                 for query_key in query_keys:
-                    if query_key not in cache:
-                        cache[query_key] = self.lookup_cves(query_key, record)
-                        time.sleep(float(self.config["query_delay_seconds"]))
-                    cves = merge_cves(cves, cache[query_key], int(self.config["max_cves_per_match"]))
+                    cves = merge_cves(cves, cache.get(query_key, []), int(self.config["max_cves_per_match"]))
                     if cves and query_key.startswith("cpe="):
                         break
             enriched.append(
@@ -38,6 +69,25 @@ class Enricher:
                 )
             )
         return enriched
+
+    def _prefetch_cache(self, records: list[FingerprintRecord]) -> dict[str, list[dict[str, Any]]]:
+        sample_records: dict[str, FingerprintRecord] = {}
+        for record in records:
+            for query_key in self._build_query_keys(record):
+                sample_records.setdefault(query_key, record)
+
+        if not sample_records:
+            return {}
+
+        cache: dict[str, list[dict[str, Any]]] = {}
+        with ThreadPoolExecutor(max_workers=self.workers) as executor:
+            futures = {
+                executor.submit(self.lookup_cves, query_key, record): query_key
+                for query_key, record in sample_records.items()
+            }
+            for future in as_completed(futures):
+                cache[futures[future]] = future.result()
+        return cache
 
     def _build_query_keys(self, record: FingerprintRecord) -> list[str]:
         query_keys: list[str] = []
@@ -63,6 +113,7 @@ class Enricher:
             return []
 
         headers = {"apiKey": self.api_key} if self.api_key else {}
+        self.rate_limiter.wait()
         try:
             response = requests.get(
                 self.config["nvd_api_base"],

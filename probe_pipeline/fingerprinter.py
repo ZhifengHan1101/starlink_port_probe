@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,13 @@ def chunked(values: list[str], size: int) -> list[list[str]]:
     if size <= 0:
         return [values]
     return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+@dataclass(slots=True)
+class FingerprintBatch:
+    batch_index: int
+    port: int
+    hosts: list[str]
 
 
 class Fingerprinter:
@@ -30,21 +38,23 @@ class Fingerprinter:
             return []
 
         records_by_host: dict[str, list[OpenPortRecord]] = {}
+        hosts_by_port: dict[int, set[str]] = {}
         for record in records:
             records_by_host.setdefault(record.ip, []).append(record)
+            hosts_by_port.setdefault(record.port, set()).add(record.ip)
 
         hosts = sorted(records_by_host)
         hosts_per_batch = int(self.fp_cfg.get("hosts_per_batch", 0) or 0)
-        host_batches = chunked(hosts, hosts_per_batch)
+        batches = self._build_batches(hosts_by_port, hosts_per_batch)
         max_workers = workers or int(self.fp_cfg["workers"])
 
         services_by_host_port: dict[tuple[str, int], dict[str, Any]] = {}
-        batch_errors: dict[str, str] = {}
+        batch_errors: dict[tuple[str, int], str] = {}
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [
-                executor.submit(self.fingerprint_batch, batch_index, host_batch, records_by_host)
-                for batch_index, host_batch in enumerate(host_batches)
+                executor.submit(self.fingerprint_batch, batch)
+                for batch in batches
             ]
             for future in as_completed(futures):
                 parsed_services, parsed_errors = future.result()
@@ -53,8 +63,8 @@ class Fingerprinter:
 
         results: list[FingerprintRecord] = []
         for ip in hosts:
-            batch_error = batch_errors.get(ip)
             for record in sorted(records_by_host[ip], key=lambda item: item.port):
+                batch_error = batch_errors.get((record.ip, record.port))
                 service_info = services_by_host_port.get((record.ip, record.port), {})
                 evidence = self._build_evidence(record.ip, record.port, service_info, batch_error)
                 evidence_path = self.evidence_dir / f"{record.ip}_{record.port}.json"
@@ -64,15 +74,12 @@ class Fingerprinter:
 
     def fingerprint_batch(
         self,
-        batch_index: int,
-        hosts: list[str],
-        records_by_host: dict[str, list[OpenPortRecord]],
-    ) -> tuple[dict[tuple[str, int], dict[str, Any]], dict[str, str]]:
-        batch_dir = ensure_dir(self.raw_dir / f"batch_{batch_index:03d}")
+        batch: FingerprintBatch,
+    ) -> tuple[dict[tuple[str, int], dict[str, Any]], dict[tuple[str, int], str]]:
+        batch_dir = ensure_dir(self.raw_dir / f"port_{batch.port:05d}" / f"batch_{batch.batch_index:03d}")
         target_file = batch_dir / "targets.txt"
-        target_file.write_text("\n".join(hosts) + "\n", encoding="utf-8")
+        target_file.write_text("\n".join(batch.hosts) + "\n", encoding="utf-8")
 
-        ports = sorted({record.port for host in hosts for record in records_by_host[host]})
         xml_path = batch_dir / "service.xml"
         meta_path = batch_dir / "service_metadata.json"
 
@@ -86,7 +93,7 @@ class Fingerprinter:
             "-iL",
             str(target_file),
             "-p",
-            ",".join(str(port) for port in ports),
+            str(batch.port),
         ]
         if self.fp_cfg.get("timing_template"):
             command.append(str(self.fp_cfg["timing_template"]))
@@ -113,16 +120,25 @@ class Fingerprinter:
                 "returncode": completed.returncode,
                 "stdout": completed.stdout,
                 "stderr": completed.stderr,
-                "hosts": hosts,
-                "ports": ports,
+                "hosts": batch.hosts,
+                "port": batch.port,
             },
         )
 
         if completed.returncode != 0 or not xml_path.exists():
             error = f"nmap -sV 执行失败，详见 {meta_path}"
-            return {}, {host: error for host in hosts}
+            return {}, {(host, batch.port): error for host in batch.hosts}
 
         return self._parse_nmap_service_xml(xml_path), {}
+
+    def _build_batches(self, hosts_by_port: dict[int, set[str]], hosts_per_batch: int) -> list[FingerprintBatch]:
+        batches: list[FingerprintBatch] = []
+        batch_index = 0
+        for port in sorted(hosts_by_port):
+            for host_batch in chunked(sorted(hosts_by_port[port]), hosts_per_batch):
+                batches.append(FingerprintBatch(batch_index=batch_index, port=port, hosts=host_batch))
+                batch_index += 1
+        return batches
 
     def _parse_nmap_service_xml(self, xml_path: Path) -> dict[tuple[str, int], dict[str, Any]]:
         services: dict[tuple[str, int], dict[str, Any]] = {}

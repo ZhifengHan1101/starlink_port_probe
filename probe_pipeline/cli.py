@@ -57,7 +57,7 @@ def main() -> int:
         fp_rows = []
 
     if args.command in ("enrich", "all"):
-        enriched_rows = run_enrich(config, run_dir)
+        enriched_rows = run_enrich(config, run_dir, args.workers)
     elif args.command == "report":
         enriched_rows = load_enriched(run_dir)
     else:
@@ -104,9 +104,9 @@ def run_fingerprint(config: dict, run_id: str, run_dir: Path, workers: int | Non
     return rows
 
 
-def run_enrich(config: dict, run_dir: Path) -> list[EnrichedRecord]:
+def run_enrich(config: dict, run_dir: Path, workers: int | None) -> list[EnrichedRecord]:
     fp_rows = load_fingerprints(run_dir)
-    enricher = Enricher(config)
+    enricher = Enricher(config, workers=workers)
     rows = enricher.run(fp_rows)
     row_dicts = [row.to_dict() for row in rows]
     write_jsonl(run_dir / "enriched.jsonl", row_dicts)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -9,7 +10,7 @@ from .io_utils import ensure_dir, load_ports, save_json, utc_timestamp
 from .models import OpenPortRecord
 
 
-def chunked(values: list[int], size: int) -> list[list[int]]:
+def chunked(values: list[dict[str, str]], size: int) -> list[list[dict[str, str]]]:
     if size <= 0:
         return [values]
     return [values[index:index + size] for index in range(0, len(values), size)]
@@ -25,18 +26,24 @@ def scan_targets(
     port_file = config["project"]["port_list_file"]
     ports = load_ports(port_file)
     raw_dir = ensure_dir(run_dir / "raw" / "nmap_scan")
-    target_file = run_dir / "targets.txt"
-    target_file.write_text("\n".join(item["ip"] for item in targets) + "\n", encoding="utf-8")
-
-    port_chunk_size = int(scan_cfg.get("ports_per_chunk", 0) or 0)
     lookup = {item["ip"]: item for item in targets}
     results: list[OpenPortRecord] = []
 
-    for index, port_chunk in enumerate(chunked(ports, port_chunk_size)):
-        scan_type = str(scan_cfg.get("scan_type", "connect")).strip().lower()
-        scan_flag = "-sS" if scan_type == "syn" else "-sT"
-        xml_path = raw_dir / f"scan_chunk_{index:03d}.xml"
-        meta_path = raw_dir / f"scan_chunk_{index:03d}_metadata.json"
+    scan_type = str(scan_cfg.get("scan_type", "syn")).strip().lower()
+    if scan_type == "syn" and hasattr(os, "geteuid") and os.geteuid() != 0:
+        raise RuntimeError("scan_type=syn 需要 root 权限以使用 nmap -sS。请以 root 运行，或显式改为 scan_type: connect。")
+
+    scan_flag = "-sS" if scan_type == "syn" else "-sT"
+    targets_per_chunk = int(scan_cfg.get("targets_per_chunk", 0) or 0)
+    target_batches = chunked(targets, targets_per_chunk)
+    port_arg = ",".join(str(port) for port in ports)
+
+    for index, target_batch in enumerate(target_batches):
+        batch_dir = ensure_dir(raw_dir / f"target_chunk_{index:03d}")
+        xml_path = batch_dir / "scan.xml"
+        meta_path = batch_dir / "scan_metadata.json"
+        target_file = batch_dir / "targets.txt"
+        target_file.write_text("\n".join(item["ip"] for item in target_batch) + "\n", encoding="utf-8")
         command = [
             str(scan_cfg.get("nmap_path", "nmap")),
             "-Pn",
@@ -48,7 +55,7 @@ def scan_targets(
             "-iL",
             str(target_file),
             "-p",
-            ",".join(str(port) for port in port_chunk),
+            port_arg,
         ]
         if scan_cfg.get("timing_template"):
             command.append(str(scan_cfg["timing_template"]))
@@ -71,6 +78,9 @@ def scan_targets(
                 "returncode": completed.returncode,
                 "stdout": completed.stdout,
                 "stderr": completed.stderr,
+                "targets": [item["ip"] for item in target_batch],
+                "target_count": len(target_batch),
+                "ports": ports,
             },
         )
         if completed.returncode != 0:
