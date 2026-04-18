@@ -33,13 +33,15 @@ def scan_targets(
     results: list[OpenPortRecord] = []
 
     for index, port_chunk in enumerate(chunked(ports, port_chunk_size)):
+        scan_type = str(scan_cfg.get("scan_type", "connect")).strip().lower()
+        scan_flag = "-sS" if scan_type == "syn" else "-sT"
         xml_path = raw_dir / f"scan_chunk_{index:03d}.xml"
         meta_path = raw_dir / f"scan_chunk_{index:03d}_metadata.json"
         command = [
             str(scan_cfg.get("nmap_path", "nmap")),
             "-Pn",
             "-n",
-            "-sT",
+            scan_flag,
             "--open",
             "-oX",
             str(xml_path),

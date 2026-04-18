@@ -10,6 +10,12 @@ from .io_utils import ensure_dir, save_json
 from .models import FingerprintRecord, OpenPortRecord
 
 
+def chunked(values: list[str], size: int) -> list[list[str]]:
+    if size <= 0:
+        return [values]
+    return [values[index:index + size] for index in range(0, len(values), size)]
+
+
 class Fingerprinter:
     def __init__(self, config: dict, run_id: str, run_dir: Path) -> None:
         self.config = config
@@ -23,22 +29,53 @@ class Fingerprinter:
         if not records:
             return []
 
-        grouped: dict[str, list[OpenPortRecord]] = {}
+        records_by_host: dict[str, list[OpenPortRecord]] = {}
         for record in records:
-            grouped.setdefault(record.ip, []).append(record)
+            records_by_host.setdefault(record.ip, []).append(record)
+
+        hosts = sorted(records_by_host)
+        hosts_per_batch = int(self.fp_cfg.get("hosts_per_batch", 0) or 0)
+        host_batches = chunked(hosts, hosts_per_batch)
+        max_workers = workers or int(self.fp_cfg["workers"])
+
+        services_by_host_port: dict[tuple[str, int], dict[str, Any]] = {}
+        batch_errors: dict[str, str] = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(self.fingerprint_batch, batch_index, host_batch, records_by_host)
+                for batch_index, host_batch in enumerate(host_batches)
+            ]
+            for future in as_completed(futures):
+                parsed_services, parsed_errors = future.result()
+                services_by_host_port.update(parsed_services)
+                batch_errors.update(parsed_errors)
 
         results: list[FingerprintRecord] = []
-        max_workers = workers or int(self.fp_cfg["workers"])
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self.fingerprint_host, ip, host_records) for ip, host_records in grouped.items()]
-            for future in as_completed(futures):
-                results.extend(future.result())
-        return sorted(results, key=lambda item: (item.ip, item.port))
+        for ip in hosts:
+            batch_error = batch_errors.get(ip)
+            for record in sorted(records_by_host[ip], key=lambda item: item.port):
+                service_info = services_by_host_port.get((record.ip, record.port), {})
+                evidence = self._build_evidence(record.ip, record.port, service_info, batch_error)
+                evidence_path = self.evidence_dir / f"{record.ip}_{record.port}.json"
+                save_json(evidence_path, evidence)
+                results.append(self._build_record(record, service_info, evidence_path, batch_error))
+        return results
 
-    def fingerprint_host(self, ip: str, records: list[OpenPortRecord]) -> list[FingerprintRecord]:
-        ports = sorted({record.port for record in records})
-        xml_path = self.raw_dir / f"{ip}.xml"
-        meta_path = self.raw_dir / f"{ip}_metadata.json"
+    def fingerprint_batch(
+        self,
+        batch_index: int,
+        hosts: list[str],
+        records_by_host: dict[str, list[OpenPortRecord]],
+    ) -> tuple[dict[tuple[str, int], dict[str, Any]], dict[str, str]]:
+        batch_dir = ensure_dir(self.raw_dir / f"batch_{batch_index:03d}")
+        target_file = batch_dir / "targets.txt"
+        target_file.write_text("\n".join(hosts) + "\n", encoding="utf-8")
+
+        ports = sorted({record.port for host in hosts for record in records_by_host[host]})
+        xml_path = batch_dir / "service.xml"
+        meta_path = batch_dir / "service_metadata.json"
+
         command = [
             str(self.fp_cfg.get("nmap_path", "nmap")),
             "-Pn",
@@ -46,9 +83,10 @@ class Fingerprinter:
             "-sV",
             "-oX",
             str(xml_path),
+            "-iL",
+            str(target_file),
             "-p",
             ",".join(str(port) for port in ports),
-            ip,
         ]
         if self.fp_cfg.get("timing_template"):
             command.append(str(self.fp_cfg["timing_template"]))
@@ -56,6 +94,12 @@ class Fingerprinter:
             command.extend(["--version-intensity", str(self.fp_cfg["version_intensity"])])
         if self.fp_cfg.get("host_timeout"):
             command.extend(["--host-timeout", str(self.fp_cfg["host_timeout"])])
+        if self.fp_cfg.get("script_timeout"):
+            command.extend(["--script-timeout", str(self.fp_cfg["script_timeout"])])
+        if self.fp_cfg.get("min_hostgroup"):
+            command.extend(["--min-hostgroup", str(self.fp_cfg["min_hostgroup"])])
+        if self.fp_cfg.get("max_hostgroup"):
+            command.extend(["--max-hostgroup", str(self.fp_cfg["max_hostgroup"])])
 
         try:
             completed = subprocess.run(command, check=False, capture_output=True, text=True)
@@ -69,31 +113,26 @@ class Fingerprinter:
                 "returncode": completed.returncode,
                 "stdout": completed.stdout,
                 "stderr": completed.stderr,
+                "hosts": hosts,
+                "ports": ports,
             },
         )
 
-        services: dict[int, dict[str, Any]] = {}
-        parse_error: str | None = None
-        if completed.returncode == 0 and xml_path.exists():
-            services = self._parse_nmap_service_xml(xml_path)
-        else:
-            parse_error = f"nmap -sV 执行失败，详见 {meta_path}"
+        if completed.returncode != 0 or not xml_path.exists():
+            error = f"nmap -sV 执行失败，详见 {meta_path}"
+            return {}, {host: error for host in hosts}
 
-        output: list[FingerprintRecord] = []
-        for record in records:
-            service_info = services.get(record.port, {})
-            evidence = self._build_evidence(ip, record.port, command, meta_path, service_info, parse_error)
-            evidence_path = self.evidence_dir / f"{record.ip}_{record.port}.json"
-            save_json(evidence_path, evidence)
-            output.append(self._build_record(record, service_info, evidence_path, parse_error))
-        return output
+        return self._parse_nmap_service_xml(xml_path), {}
 
-    def _parse_nmap_service_xml(self, xml_path: Path) -> dict[int, dict[str, Any]]:
-        services: dict[int, dict[str, Any]] = {}
+    def _parse_nmap_service_xml(self, xml_path: Path) -> dict[tuple[str, int], dict[str, Any]]:
+        services: dict[tuple[str, int], dict[str, Any]] = {}
         root = ET.parse(xml_path).getroot()
         for host in root.findall("host"):
             address = host.find("./address[@addrtype='ipv4']")
             if address is None:
+                continue
+            ip = address.get("addr", "").strip()
+            if not ip:
                 continue
             for port in host.findall("./ports/port"):
                 if port.get("protocol") != "tcp":
@@ -110,7 +149,7 @@ class Fingerprinter:
                             "output": script.get("output"),
                         }
                     )
-                services[int(port_id)] = {
+                services[(ip, int(port_id))] = {
                     "port_state": (port.find("state").attrib if port.find("state") is not None else {}),
                     "service": (service.attrib if service is not None else {}),
                     "cpes": [item.text for item in port.findall("./service/cpe") if item.text],
@@ -122,8 +161,6 @@ class Fingerprinter:
         self,
         ip: str,
         port: int,
-        command: list[str],
-        meta_path: Path,
         service_info: dict[str, Any],
         parse_error: str | None,
     ) -> dict[str, Any]:
@@ -132,8 +169,6 @@ class Fingerprinter:
             "port": port,
             "transport": "tcp",
             "scan_tool": "nmap",
-            "command": command,
-            "metadata_path": str(meta_path),
             "steps": [],
         }
         if parse_error:

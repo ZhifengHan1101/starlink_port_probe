@@ -27,8 +27,7 @@ starlink_port_probe/
     ├── scanner.py
     ├── fingerprinter.py
     ├── enrich.py
-    ├── report.py
-    └── signatures.py
+    └── report.py
 ```
 
 ## 安装
@@ -40,12 +39,13 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-默认配置使用 `nmap -sT` 做端口发现，因此不依赖 `xmap`。如果后续你想切到 `nmap -sS`，通常需要 root 或 `CAP_NET_RAW` 权限。
+默认配置使用 `nmap -sT` 做端口发现，因此不依赖 root。若当前环境允许原始套接字权限，可以将 `scan_type` 改为 `syn` 以切到 `nmap -sS`。
 
 ```yaml
 scan:
   engine: nmap
   nmap_path: /usr/bin/nmap
+  scan_type: connect
   timing_template: -T4
 ```
 
@@ -75,8 +75,10 @@ python3 main.py all
 ```bash
 python3 main.py all --config config.yaml --limit 100
 python3 main.py scan --run-id test-run --input /home/ubuntu/hzf/starlink_as_probe/as149662/results/active_ipv4_2026_04_18.csv
-python3 main.py fingerprint --run-id test-run --workers 100
+python3 main.py fingerprint --run-id test-run --workers 4
 ```
+
+`fingerprint` 阶段现在按主机批量调用少量 `nmap -sV` 进程，而不是为每个 IP 单独启动一个 `nmap`。`--workers` 表示并行运行的批次数，而非线程内的逐 IP 探测数。
 
 ## 输出
 
@@ -93,11 +95,13 @@ runs/<run_id>/
 ├── report.md
 └── raw/
     ├── nmap_scan/
-    │   ├── scan.xml
-    │   └── scan_metadata.json
+    │   ├── scan_chunk_*.xml
+    │   └── scan_chunk_*_metadata.json
     ├── nmap_service/
-    │   ├── *.xml
-    │   └── *_metadata.json
+    │   └── batch_*/
+    │       ├── service.xml
+    │       ├── service_metadata.json
+    │       └── targets.txt
     └── evidence/
         └── *.json
 ```
@@ -107,9 +111,9 @@ runs/<run_id>/
 - `open_ports.*`: `nmap` 开放端口结果。
 - `fingerprints.*`: `nmap -sV` 服务识别结果，包含 `service`, `product`, `version`, `cpe`, `confidence`。
 - `enriched.*`: 在指纹结果基础上附加 `cves`。
-- `raw/nmap_scan/scan.xml`: 原始 `nmap` 端口扫描 XML。
-- `raw/nmap_scan/scan_metadata.json`: 端口扫描命令、返回码和标准输出。
-- `raw/nmap_service/*.xml`: 每台主机一次 `nmap -sV` 的原始 XML。
+- `raw/nmap_scan/scan_chunk_*.xml`: 端口扫描分块 XML。
+- `raw/nmap_scan/scan_chunk_*_metadata.json`: 每个扫描分块的命令、返回码和标准输出。
+- `raw/nmap_service/batch_*/service.xml`: 每批主机一次 `nmap -sV` 的原始 XML。
 - `raw/evidence/*.json`: 每个 `ip:port` 的服务识别证据，主要来自 `nmap -sV` 的 service/cpe/script 输出。
 
 ## NVD CVE 查询
@@ -122,6 +126,8 @@ export NVD_API_KEY=your_api_key
 
 如果网络不可达，流程不会中断，但 `cves` 可能为空，并在结果中保留 `enrichment_status`。
 
+默认仅使用 CPE 进行精确查询，不再默认退回宽泛的 `keywordSearch`。如确有需要，可在 `config.yaml` 中将 `enrich.allow_keyword_fallback` 改为 `true`。
+
 ## 依赖说明
 
 - `nmap`: 用于开放端口发现和服务识别。
@@ -130,6 +136,6 @@ export NVD_API_KEY=your_api_key
 ## 设计原则
 
 - 开放端口发现和服务识别解耦。
-- 服务识别尽量复用成熟扫描器而不是自维护协议指纹。
+- 服务识别优先使用批量 `nmap -sV`，减少逐主机启动进程的调度开销。
 - 保留原始 XML 与证据 JSON，便于复核与二次分析。
 - 输出 JSONL/CSV/Markdown，适合后处理和报告交付。
