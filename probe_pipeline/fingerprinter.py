@@ -114,7 +114,7 @@ class Fingerprinter:
         try:
             completed = subprocess.run(command, check=False, capture_output=True, text=True)
         except FileNotFoundError as exc:
-            raise RuntimeError("nmap 未安装或不在 PATH 中，无法执行 fingerprint 阶段。") from exc
+            raise RuntimeError("nmap is not installed or is not available in PATH, so the fingerprint stage cannot run.") from exc
 
         save_json(
             meta_path,
@@ -129,7 +129,7 @@ class Fingerprinter:
         )
 
         if completed.returncode != 0 or not xml_path.exists():
-            error = f"nmap -sV 执行失败，详见 {meta_path}"
+            error = f"nmap -sV failed. See {meta_path} for details."
             return {}, {(host, batch.port): error for host in batch.hosts}
 
         return self._parse_nmap_service_xml(xml_path), {}
@@ -193,7 +193,7 @@ class Fingerprinter:
         try:
             completed = subprocess.run(command, check=False, capture_output=True, text=True)
         except FileNotFoundError as exc:
-            raise RuntimeError("nmap 未安装或不在 PATH 中，无法执行 OS 识别。") from exc
+            raise RuntimeError("nmap is not installed or is not available in PATH, so OS detection cannot run.") from exc
 
         save_json(
             meta_path,
@@ -334,7 +334,7 @@ class Fingerprinter:
         if parse_error:
             notes.append(parse_error)
         elif not service_attrs:
-            notes.append("nmap -sV 未返回明确的服务识别结果。")
+            notes.append("nmap -sV did not return a clear service fingerprint.")
         elif extrainfo:
             notes.append(f"nmap extra info: {extrainfo}")
 

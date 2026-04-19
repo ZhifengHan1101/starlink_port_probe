@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument(
                 "--no-os",
                 action="store_true",
-                help="只做 nmap -sV 服务识别，跳过 nmap -O 操作系统识别。",
+                help="Run only nmap -sV service fingerprinting and skip nmap -O OS detection.",
             )
     return parser
 
@@ -46,7 +46,7 @@ def main() -> int:
     args = parser.parse_args()
     config = load_config(args.config)
     if args.command in ("fingerprint", "enrich", "report") and not args.run_id:
-        raise RuntimeError(f"{args.command} 子命令需要通过 --run-id 指向已有扫描结果目录。")
+        raise RuntimeError(f"The {args.command} subcommand requires --run-id to point to an existing scan output directory.")
     run_id = args.run_id or default_run_id()
     run_dir = ensure_dir(Path(config["project"]["output_root"]) / run_id)
 
@@ -87,7 +87,7 @@ def run_scan(
 ) -> list[OpenPortRecord]:
     files = discover_input_files(input_files, config["project"]["default_input_glob"])
     if not files:
-        raise RuntimeError("未找到输入 IPv4 CSV。")
+        raise RuntimeError("No input IPv4 CSV files were found.")
     targets: list[dict[str, str]] = []
     for file_path in files:
         targets.extend(load_ips_from_csv(file_path, limit=None))

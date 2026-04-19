@@ -29,7 +29,7 @@ def scan_targets(
     if not targets:
         return []
     if hasattr(os, "geteuid") and os.geteuid() != 0:
-        raise RuntimeError("xmap TCP SYN 扫描需要 root 权限。请以 root 运行 scan/all 阶段。")
+        raise RuntimeError("The xmap TCP SYN scan requires root privileges. Run the scan/all stage as root.")
 
     configured_xmap = str(scan_cfg.get("xmap_path", "xmap"))
     xmap_binary = configured_xmap
@@ -95,8 +95,8 @@ def scan_targets(
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
     except FileNotFoundError as exc:
         raise RuntimeError(
-            f"xmap 不可执行。当前配置 xmap_path={configured_xmap!r}，"
-            "请改为正确路径或确保 xmap 在 PATH 中。"
+            f"xmap is not executable. The current xmap_path is {configured_xmap!r}; "
+            "set it to the correct path or make sure xmap is available in PATH."
         ) from exc
 
     save_json(
@@ -111,7 +111,7 @@ def scan_targets(
         },
     )
     if completed.returncode != 0:
-        raise RuntimeError(f"xmap 扫描失败，详见 {command_file}")
+        raise RuntimeError(f"xmap scan failed. See {command_file} for details.")
     if not output_file.exists():
         return []
     return parse_xmap_csv(output_file, run_id, lookup)
