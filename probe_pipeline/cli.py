@@ -32,6 +32,12 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--input", action="append", default=None)
         sub.add_argument("--limit", type=int, default=None)
         sub.add_argument("--workers", type=int, default=None)
+        if name in ("fingerprint", "all"):
+            sub.add_argument(
+                "--no-os",
+                action="store_true",
+                help="只做 nmap -sV 服务识别，跳过 nmap -O 操作系统识别。",
+            )
     return parser
 
 
@@ -50,7 +56,7 @@ def main() -> int:
         scan_rows = load_open_ports(run_dir)
 
     if args.command in ("fingerprint", "all"):
-        fp_rows = run_fingerprint(config, run_id, run_dir, args.workers)
+        fp_rows = run_fingerprint(config, run_id, run_dir, args.workers, no_os=getattr(args, "no_os", False))
     elif args.command in ("enrich", "report"):
         fp_rows = load_fingerprints(run_dir)
     else:
@@ -94,8 +100,16 @@ def run_scan(
     return rows
 
 
-def run_fingerprint(config: dict, run_id: str, run_dir: Path, workers: int | None) -> list[FingerprintRecord]:
+def run_fingerprint(
+    config: dict,
+    run_id: str,
+    run_dir: Path,
+    workers: int | None,
+    no_os: bool = False,
+) -> list[FingerprintRecord]:
     scan_rows = load_open_ports(run_dir)
+    if no_os:
+        config["fingerprint"]["os_detection"] = False
     fingerprinter = Fingerprinter(config, run_id, run_dir)
     rows = fingerprinter.run(scan_rows, workers=workers)
     row_dicts = [row.to_dict() for row in rows]

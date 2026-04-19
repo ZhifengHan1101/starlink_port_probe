@@ -77,6 +77,7 @@ python3 main.py all
 python3 main.py all --config config.yaml --limit 100
 python3 main.py scan --run-id test-run --input /home/ubuntu/hzf/starlink_as_probe/as149662/results/active_ipv4_2026_04_18.csv
 python3 main.py fingerprint --run-id test-run --workers 4
+python3 main.py fingerprint --run-id test-run --workers 4 --no-os
 ```
 
 `scan` 阶段会把整份输入 IP 和整份 top 1000 TCP 端口一次性交给 `xmap`，不再做任何目标分块或端口分块，直接由 `xmap` 自己负责高速发包与接收。
@@ -84,6 +85,8 @@ python3 main.py fingerprint --run-id test-run --workers 4
 `fingerprint` 阶段会先按开放端口分组，再把对应 IP 按批次送入 `nmap -sV -p <port>`，避免把某批主机的端口并集再次广播到所有主机上。
 
 默认将 `version_intensity` 下调到 `3`，并把 `hosts_per_batch` 提高到 `512`，降低弱响应主机拖慢 `nmap -sV` 的概率，同时减少 Python 侧频繁拉起 Nmap 进程的开销。`fingerprint` 还会额外做一轮按主机批处理的 `nmap -O`，把 OS 名称、家族、代际版本和 CPE 一起写入结果。
+
+如果端口扫描已经完成，只想重新做服务识别且不做 OS 识别，可以运行 `python3 main.py fingerprint --run-id <run_id> --no-os`。
 
 `--workers` 表示 `fingerprint` 或 `enrich` 阶段的并发批次数，而非线程内的逐 IP 探测数。
 
