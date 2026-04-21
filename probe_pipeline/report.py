@@ -16,6 +16,16 @@ def render_report(
 ) -> None:
     product_counter = Counter(row.product or "unknown" for row in fp_rows if row.service)
     service_counter = Counter(row.service or "unknown" for row in fp_rows)
+    os_hosts = best_os_by_host(fp_rows)
+    os_detected_hosts = {
+        ip: row
+        for ip, row in os_hosts.items()
+        if row.os_name or row.os_family or row.os_vendor or row.os_cpe
+    }
+    os_name_counter = Counter(row.os_name or "unknown" for row in os_detected_hosts.values())
+    os_family_counter = Counter(row.os_family or "unknown" for row in os_detected_hosts.values())
+    os_vendor_counter = Counter(row.os_vendor or "unknown" for row in os_detected_hosts.values())
+    os_cpe_counter = Counter(cpe for row in os_detected_hosts.values() for cpe in row.os_cpe)
     cve_counter = Counter()
     for row in enriched_rows:
         for cve in row.cves:
@@ -39,6 +49,35 @@ def render_report(
     for product, count in product_counter.most_common(int(config["report"]["top_n_products"])):
         lines.append(f"- `{product}`: {count}")
     lines.append("")
+    if os_detected_hosts:
+        total_hosts = len({row.ip for row in fp_rows})
+        unknown_hosts = max(0, total_hosts - len(os_detected_hosts))
+        lines.append("## OS Summary")
+        lines.append("")
+        lines.append(f"- Hosts with OS fingerprint: `{len(os_detected_hosts)}`")
+        lines.append(f"- Hosts without OS fingerprint: `{unknown_hosts}`")
+        lines.append("")
+        lines.append("### Top OS Names")
+        lines.append("")
+        for os_name, count in os_name_counter.most_common(20):
+            lines.append(f"- `{os_name}`: {count}")
+        lines.append("")
+        lines.append("### Top OS Families")
+        lines.append("")
+        for os_family, count in os_family_counter.most_common(20):
+            lines.append(f"- `{os_family}`: {count}")
+        lines.append("")
+        lines.append("### Top OS Vendors")
+        lines.append("")
+        for os_vendor, count in os_vendor_counter.most_common(20):
+            lines.append(f"- `{os_vendor}`: {count}")
+        if os_cpe_counter:
+            lines.append("")
+            lines.append("### Top OS CPEs")
+            lines.append("")
+            for os_cpe, count in os_cpe_counter.most_common(20):
+                lines.append(f"- `{os_cpe}`: {count}")
+        lines.append("")
     lines.append("## Top CVEs")
     lines.append("")
     if cve_counter:
@@ -58,3 +97,17 @@ def render_report(
             f"confidence=`{row.confidence:.2f}`, cves=`{cve_ids}`"
         )
     Path(output_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def best_os_by_host(fp_rows: list[FingerprintRecord]) -> dict[str, FingerprintRecord]:
+    rows_by_host: dict[str, FingerprintRecord] = {}
+    for row in fp_rows:
+        current = rows_by_host.get(row.ip)
+        if current is None or os_score(row) > os_score(current):
+            rows_by_host[row.ip] = row
+    return rows_by_host
+
+
+def os_score(row: FingerprintRecord) -> tuple[int, float, int]:
+    has_os = int(bool(row.os_name or row.os_family or row.os_vendor or row.os_cpe))
+    return has_os, row.os_accuracy, len(row.os_cpe)
