@@ -30,6 +30,16 @@ def load_ports(port_file: str | Path) -> list[int]:
         chunk = chunk.strip()
         if not chunk:
             continue
+        if "-" in chunk:
+            start_text, end_text = chunk.split("-", 1)
+            start = int(start_text.strip())
+            end = int(end_text.strip())
+            if start > end:
+                start, end = end, start
+            for value in range(start, end + 1):
+                if 1 <= value <= 65535:
+                    ports.append(value)
+            continue
         value = int(chunk)
         if 1 <= value <= 65535:
             ports.append(value)

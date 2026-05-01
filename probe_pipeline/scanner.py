@@ -15,9 +15,25 @@ def scan_targets(
     run_id: str,
     targets: list[dict[str, str]],
     run_dir: Path,
+    port_profile: str | None = None,
 ) -> list[OpenPortRecord]:
     scan_cfg = config["scan"]
-    port_file = config["project"]["port_list_file"]
+    project_cfg = config["project"]
+    configured_profiles = project_cfg.get("port_profiles") or {}
+    selected_profile = port_profile or project_cfg.get("default_port_profile")
+
+    if configured_profiles:
+        if not selected_profile:
+            raise RuntimeError("No port profile selected. Set project.default_port_profile or pass --port-profile.")
+        if selected_profile not in configured_profiles:
+            valid_profiles = ", ".join(sorted(configured_profiles))
+            raise RuntimeError(f"Unknown port profile {selected_profile!r}. Available profiles: {valid_profiles}")
+        port_file = configured_profiles[selected_profile]
+    else:
+        # Backward-compatible fallback for older configs.
+        port_file = project_cfg["port_list_file"]
+        selected_profile = selected_profile or "custom"
+
     ports = load_ports(port_file)
     raw_dir = ensure_dir(run_dir / "raw" / "xmap_scan")
     target_file = raw_dir / "targets.txt"
@@ -107,6 +123,8 @@ def scan_targets(
             "stdout": completed.stdout,
             "stderr": completed.stderr,
             "target_count": len(targets),
+            "port_profile": selected_profile,
+            "port_file": str(port_file),
             "ports": ports,
         },
     )

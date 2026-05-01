@@ -1,7 +1,10 @@
 project:
   name: starlink_port_probe
   output_root: /home/ubuntu/hzf/starlink_port_probe/runs
-  port_list_file: /home/ubuntu/hzf/starlink_port_probe/nmap_top1000_tcp_ports.txt
+  default_port_profile: top1000
+  port_profiles:
+    top1000: /home/ubuntu/hzf/starlink_port_probe/nmap_top1000_tcp_ports.txt
+    full: /home/ubuntu/hzf/starlink_port_probe/all_tcp_ports.txt
   default_input_glob: /home/ubuntu/hzf/starlink_as_probe/as*/results/active_ipv4_*.csv
 
 scan:

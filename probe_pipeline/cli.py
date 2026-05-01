@@ -32,6 +32,12 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--input", action="append", default=None)
         sub.add_argument("--limit", type=int, default=None)
         sub.add_argument("--workers", type=int, default=None)
+        if name in ("scan", "all"):
+            sub.add_argument(
+                "--port-profile",
+                default=None,
+                help="Port profile to scan, for example 'top1000' or 'full'. Overrides the config default.",
+            )
         if name in ("fingerprint", "all"):
             sub.add_argument(
                 "--no-os",
@@ -51,7 +57,7 @@ def main() -> int:
     run_dir = ensure_dir(Path(config["project"]["output_root"]) / run_id)
 
     if args.command in ("scan", "all"):
-        scan_rows = run_scan(config, run_id, run_dir, args.input, args.limit)
+        scan_rows = run_scan(config, run_id, run_dir, args.input, args.limit, args.port_profile)
     else:
         scan_rows = load_open_ports(run_dir)
 
@@ -84,6 +90,7 @@ def run_scan(
     run_dir: Path,
     input_files: list[str] | None,
     limit: int | None,
+    port_profile: str | None,
 ) -> list[OpenPortRecord]:
     files = discover_input_files(input_files, config["project"]["default_input_glob"])
     if not files:
@@ -93,7 +100,7 @@ def run_scan(
         targets.extend(load_ips_from_csv(file_path, limit=None))
     if limit is not None:
         targets = targets[:limit]
-    rows = scan_targets(config, run_id, targets, run_dir)
+    rows = scan_targets(config, run_id, targets, run_dir, port_profile=port_profile)
     rows_dicts = [row.to_dict() for row in rows]
     write_jsonl(run_dir / "open_ports.jsonl", rows_dicts)
     write_csv(run_dir / "open_ports.csv", rows_dicts)

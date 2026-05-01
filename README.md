@@ -4,7 +4,7 @@ A TCP service discovery and enrichment pipeline for active Starlink IPv4 invento
 
 The pipeline has five stages:
 
-1. `scan`: runs an `xmap` TCP SYN scan against the input IP list across the top 1000 TCP ports. This stage only discovers open ports.
+1. `scan`: runs an `xmap` TCP SYN scan against the input IP list across the configured TCP port profile. By default this is the top 1000 TCP ports, but it can be switched to all 65535 TCP ports.
 2. `fingerprint`: runs `nmap -sV` on open ports and optionally runs `nmap -O` for host OS detection. It extracts service, product, version, CPE, and OS metadata while preserving raw evidence.
 3. `enrich`: maps extracted CPE and product metadata to CVEs.
 4. `report`: renders a Markdown report.
@@ -73,22 +73,38 @@ python3 main.py scan --input a.csv --input b.csv
 
 ```bash
 python3 main.py scan
+python3 main.py scan --port-profile full
 python3 main.py fingerprint --run-id 20260418T120000Z
 python3 main.py enrich --run-id 20260418T120000Z
 python3 main.py report --run-id 20260418T120000Z
 python3 main.py all
+python3 main.py all --port-profile full
 ```
 
 Common options:
 
 ```bash
 python3 main.py all --config config.yaml --limit 100
+python3 main.py all --port-profile top1000
+python3 main.py all --port-profile full
 python3 main.py scan --run-id test-run --input /home/ubuntu/hzf/starlink_as_probe/as149662/results/active_ipv4_2026_04_18.csv
 python3 main.py fingerprint --run-id test-run --workers 4
 python3 main.py fingerprint --run-id test-run --workers 4 --no-os
 ```
 
-The `scan` stage submits the full input IP list and the full top-1000 TCP port list to a single `xmap` run. It does not split targets or ports in Python; packet sending and response collection are handled by `xmap`.
+The `scan` stage submits the full input IP list and the full selected TCP port list to a single `xmap` run. It does not split targets or ports in Python; packet sending and response collection are handled by `xmap`.
+
+The default port profile is configured in `config.yaml`:
+
+```yaml
+project:
+  default_port_profile: top1000
+  port_profiles:
+    top1000: /home/ubuntu/hzf/starlink_port_probe/nmap_top1000_tcp_ports.txt
+    full: /home/ubuntu/hzf/starlink_port_probe/all_tcp_ports.txt
+```
+
+Port profile files may contain comma-separated port numbers and ranges such as `80,443,8000-8100` or `1-65535`.
 
 The `fingerprint` stage groups open endpoints by port, then sends each host batch to `nmap -sV -p <port>`. This avoids broadcasting the union of a batch's open ports back across every host in that batch.
 
