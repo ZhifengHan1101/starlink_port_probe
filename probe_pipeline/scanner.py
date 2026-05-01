@@ -10,6 +10,25 @@ from .io_utils import ensure_dir, load_ports, save_json, utc_timestamp
 from .models import OpenPortRecord
 
 
+def format_ports_for_xmap(ports: list[int]) -> str:
+    if not ports:
+        return ""
+
+    ranges: list[str] = []
+    start = ports[0]
+    end = ports[0]
+
+    for port in ports[1:]:
+        if port == end + 1:
+            end = port
+            continue
+        ranges.append(f"{start}-{end}" if start != end else str(start))
+        start = end = port
+
+    ranges.append(f"{start}-{end}" if start != end else str(start))
+    return ",".join(ranges)
+
+
 def scan_targets(
     config: dict,
     run_id: str,
@@ -59,7 +78,7 @@ def scan_targets(
             xmap_binary = discovered
 
     target_file.write_text("\n".join(item["ip"] for item in targets) + "\n", encoding="utf-8")
-    port_arg = ",".join(str(port) for port in ports)
+    port_arg = format_ports_for_xmap(ports)
     command = [
         xmap_binary,
         "-4",
@@ -125,7 +144,8 @@ def scan_targets(
             "target_count": len(targets),
             "port_profile": selected_profile,
             "port_file": str(port_file),
-            "ports": ports,
+            "port_count": len(ports),
+            "port_arg": port_arg,
         },
     )
     if completed.returncode != 0:
