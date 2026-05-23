@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan today's Starlink IPv4 addresses on the top 1000 TCP ports using xmap.
+"""Run the full probe pipeline for today's Starlink IPv4 addresses.
 
 Input : ~/hzf/starlink_as_probe/as14593/results/active_ipv4_{today}.csv
 Output: ~/hzf/starlink_port_probe/runs/{run_id}/
@@ -19,11 +19,9 @@ from probe_pipeline.config import load_config
 from probe_pipeline.io_utils import (
     default_run_id,
     ensure_dir,
-    load_ips_from_csv,
-    write_csv,
-    write_jsonl,
 )
-from probe_pipeline.scanner import scan_targets
+from probe_pipeline.cli import run_enrich, run_fingerprint, run_scan
+from probe_pipeline.report import render_report
 
 
 def _real_home() -> Path:
@@ -62,15 +60,20 @@ def main() -> int:
     print(f"Run ID: {run_id}")
     print(f"Output: {run_dir}")
 
-    targets = load_ips_from_csv(str(input_file))
-    print(f"Loaded {len(targets)} target IPs")
+    print("Stage: scan (port profile: top1000)")
+    scan_rows = run_scan(config, run_id, run_dir, [str(input_file)], limit=None, port_profile="top1000")
+    print(f"Found {len(scan_rows)} open ports across {len({r.ip for r in scan_rows})} hosts")
 
-    rows = scan_targets(config, run_id, targets, run_dir, port_profile="top1000")
-    print(f"Found {len(rows)} open ports across {len({r.ip for r in rows})} hosts")
+    print("Stage: fingerprint")
+    fp_rows = run_fingerprint(config, run_id, run_dir, workers=None)
+    print(f"Fingerprinted {len(fp_rows)} endpoints")
 
-    rows_dicts = [r.to_dict() for r in rows]
-    write_jsonl(run_dir / "open_ports.jsonl", rows_dicts)
-    write_csv(run_dir / "open_ports.csv", rows_dicts)
+    print("Stage: enrich")
+    enriched_rows = run_enrich(config, run_dir, workers=None)
+    print(f"Enriched {len(enriched_rows)} endpoints")
+
+    print("Stage: report")
+    render_report(run_id, scan_rows, fp_rows, enriched_rows, run_dir / "report.md", config)
     print("Done.")
     return 0
 
