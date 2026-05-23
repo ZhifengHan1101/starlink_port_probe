@@ -7,6 +7,8 @@ Output: ~/hzf/starlink_port_probe/runs/{run_id}/
 
 from __future__ import annotations
 
+import os
+import pwd
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +26,15 @@ from probe_pipeline.io_utils import (
 from probe_pipeline.scanner import scan_targets
 
 
-INPUT_DIR = Path.home() / "hzf" / "starshield-probe" / "results"
+def _real_home() -> Path:
+    """Return the real user's home directory, even when running under sudo."""
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        return Path(pwd.getpwnam(sudo_user).pw_dir)
+    return Path.home()
+
+
+INPUT_DIR = _real_home() / "hzf" / "starshield-probe" / "results"
 
 
 def find_today_input() -> Path:
